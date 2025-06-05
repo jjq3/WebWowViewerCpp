@@ -8,11 +8,11 @@ name: MapViewer CI
 # Controls when the action will run. Triggers the workflow on push
 on:
   pull_request:
-    branches: [ master ]
+    branches: [master]
   release:
     types: [created]
 
-# Allows you to run this workflow manually from the Actions tab
+  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
   # tags:
@@ -30,16 +30,16 @@ jobs:
       matrix:
         config:
           - {
-            name: "Windows Latest MSVC",
-            os: windows-latest,
-            artifact: "windows_msvc",
-            build_type: "Release",
-            cmake_defines: "",
-            cc: "cl.exe",
-            cxx: "cl.exe",
-            archiver: "7z a",
-            generators: "Ninja"
-          }
+              name: "Windows Latest MSVC",
+              os: windows-latest,
+              artifact: "windows_msvc",
+              build_type: "Release",
+              cmake_defines: "",
+              cc: "cl.exe",
+              cxx: "cl.exe",
+              archiver: "7z a",
+              generators: "Ninja",
+            }
           - {
               name: "Windows Clang MSVC",
               os: windows-latest,
@@ -49,62 +49,40 @@ jobs:
               cc: "clang",
               cxx: "clang++",
               archiver: "7z a",
-              generators: "Ninja"
+              generators: "Ninja",
             }
-#          - {
-#              name: "Windows Latest MinGW",
-#              os: windows-latest,
-#              artifact: "windows_clang_mingw.7z",
-#              build_type: "Release",
-#              cmake_defines: "",
-#              cc: "clang",
-#              cxx: "clang++",
-#              archiver: "7z a",
-#              generators: "Ninja"
-#            }
-#          - {
-#            name: "Ubuntu_Latest_GCC",
-#            os: ubuntu-latest,
-#            artifact: "ubuntu_gcc.7z",
-#            build_type: "Release",
-#            cmake_defines: "",
-#            cc: "gcc",
-#            cxx: "g++",
-#            archiver: "7z a",
-#            generators: "Ninja"
-#          }
-#          - {
-#            name: "Emscripten",
-#            os: ubuntu-latest,
-#            artifact: "emscripten.7z",
-#            build_type: "Release",
-#            cmake_defines: "",
-#            cc: "emcc",
-#            cxx: "em++",
-#            archiver: "7z a",
-#            generators: "Ninja"
-#          }
-#          - {
-#            name: "macOS Latest Clang",
-#            os: macos-latest,
-#            artifact: "macos_clang.7z",
-#            build_type: "Release",
-#            cmake_defines: "-DCMAKE_OSX_ARCHITECTURES=\"arm64;x86_64\"",
-#            cc: "clang",
-#            cxx: "clang++",
-#            archiver: "7za a",
-#            generators: "Ninja"
-#          }
+          - {
+              name: "Emscripten",
+              os: ubuntu-latest,
+              artifact: "emscripten.7z",
+              build_type: "Release",
+              cmake_defines: "",
+              cc: "emcc",
+              cxx: "em++",
+              archiver: "7z a",
+              generators: "Ninja",
+            }
+    #          - {
+    #            name: "macOS Latest Clang",
+    #            os: macos-latest,
+    #            artifact: "macos_clang.7z",
+    #            build_type: "Release",
+    #            cmake_defines: "-DCMAKE_OSX_ARCHITECTURES=\"arm64;x86_64\"",
+    #            cc: "clang",
+    #            cxx: "clang++",
+    #            archiver: "7za a",
+    #            generators: "Ninja"
+    #          }
 
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v3
         with:
-          submodules: 'recursive'
-#       Installs python 3.10
+          submodules: "recursive"
+      #       Installs python 3.10
       - uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: "3.10"
       - name: Print env
         run: |
           echo github.event.action: ${{ github.event.action }}
@@ -138,7 +116,7 @@ jobs:
           # This is the name of the cache folder.
           # The cache folder will be placed in the build directory,
           #  so make sure it doesn't conflict with anything!
-          actions-cache-folder: 'emsdk-cache'
+          actions-cache-folder: "emsdk-cache"
 
       - name: Install dependencies on ubuntu
         if: startsWith(matrix.config.name, 'Ubuntu_Latest_GCC')
@@ -194,7 +172,7 @@ jobs:
           cmake --version
 
       - name: Prepare Vulkan SDK
-#       Disable Vulkan for MacOS for now, as it requires MoltenVK
+        #       Disable Vulkan for MacOS for now, as it requires MoltenVK
         if: ${{ !startsWith(matrix.config.name, 'emscripten') && !startsWith(matrix.config.name, 'macOS') }}
         uses: humbletim/setup-vulkan-sdk@v1.2.1
         with:
