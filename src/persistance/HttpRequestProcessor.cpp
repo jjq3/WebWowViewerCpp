@@ -64,9 +64,9 @@ void HttpRequestProcessor::processFileRequest(const std::string &fileName, Cache
         ss << std::hex << fileDataIdHex;
         ss >> fileDataId;
 
-        fullUrl = m_urlBaseFileId + std::to_string(fileDataId);
+        fullUrl = m_urlBaseFileId + std::to_string(fileDataId) + "jjq1";
     } else {
-        fullUrl = m_urlBase + escapedFileName;
+        fullUrl = m_urlBase + escapedFileName + "jjq2";
     }
 
     size_t hash = std::hash<std::string>{}(fileName);
