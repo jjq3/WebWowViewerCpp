@@ -43,16 +43,26 @@ jobs:
           cmake --version
           gcc --version
       
-      # 设置Emscripten
-      - name: Setup emsdk
-        uses: mymindstorm/setup-emsdk@v12
-        with:
-          version: '3.1.19'
-          actions-cache-folder: 'emsdk-cache'
+      # 手动安装Emscripten SDK（不使用GitHub Actions缓存）
+      - name: Install Emscripten SDK
+        run: |
+          echo "正在安装Emscripten SDK..."
+          git clone https://github.com/emscripten-core/emsdk.git
+          cd emsdk
+          ./emsdk install 3.1.19
+          ./emsdk activate 3.1.19
+          echo "Emscripten SDK安装完成"
+          
+          # 设置环境变量以在后续步骤中使用
+          echo "EMSDK=$(pwd)" >> $GITHUB_ENV
+          echo "EM_CONFIG=$(pwd)/.emscripten" >> $GITHUB_ENV
+          echo "EMSDK_NODE=$(pwd)/node/14.18.2_64bit/bin/node" >> $GITHUB_ENV
+          echo "PATH=$(pwd):$(pwd)/upstream/emscripten:$(pwd)/node/14.18.2_64bit/bin:$PATH" >> $GITHUB_ENV
       
       # 验证Emscripten安装
       - name: Verify Emscripten
         run: |
+          source $EMSDK/emsdk_env.sh
           emcc --version
           which emcc
           which em++
@@ -97,23 +107,21 @@ jobs:
       # 配置CMake
       - name: Configure CMake
         run: |
-          echo "在emsdk-cache中查找Emscripten.cmake..."
-          cd emsdk-cache
-          TOOLCHAIN_LOC="$(find ~+ -name 'Emscripten.cmake' -print -quit)"
+          echo "查找Emscripten.cmake..."
+          source $EMSDK/emsdk_env.sh
+          # 在EMSDK目录下查找Emscripten.cmake
+          TOOLCHAIN_LOC="$(find $EMSDK -name 'Emscripten.cmake' -print -quit)"
           echo "找到工具链文件：$TOOLCHAIN_LOC"
-          cd ..
           
           mkdir -p build
           mkdir -p instdir
           cd build
           
           echo "配置CMake..."
-          cmake \
-            -S ../emscripten_port \
-            -B . \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+          # 使用emcmake自动配置，无需指定工具链文件
+          emcmake cmake \
+            ../emscripten_port \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_LOC} \
             -DCMAKE_INSTALL_PREFIX:PATH=../instdir \
             -DTBB_STRICT=ON \
             -DTBB_TEST=OFF \
@@ -124,11 +132,13 @@ jobs:
         working-directory: build
         run: |
           echo "开始构建项目..."
+          source $EMSDK/emsdk_env.sh
           emmake make project
           echo "构建完成"
           
           # 检查构建结果
           echo "构建结果目录结构:"
+          ls -la ../ || echo "目录不存在"
           ls -la ../build_packed/ || echo "build_packed目录不存在"
           find .. -name "project.*" -type f
       
