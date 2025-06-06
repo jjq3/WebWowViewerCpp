@@ -26,13 +26,17 @@ jobs:
         with:
           python-version: '3.10'
       
-      # 打印环境信息
-      - name: Print env
+      # 打印环境信息和目录结构
+      - name: Print env and explore repo
         run: |
           echo github.event.action: ${{ github.event.action }}
           echo github.event_name: ${{ github.event_name }}
           echo "当前目录内容:"
           ls -la
+          echo "查看emscripten_port目录:"
+          ls -la emscripten_port || echo "emscripten_port目录不存在"
+          echo "检查wowViewerLib目录:"
+          ls -la wowViewerLib || echo "wowViewerLib目录不存在"
       
       # 安装依赖
       - name: Install dependencies
@@ -67,127 +71,145 @@ jobs:
           which emcc
           which em++
       
-      # 修改TBB源代码以解决构建问题
-      - name: Fix TBB issues
-        shell: bash
+      # 创建自定义TBB CMake配置
+      - name: Create custom TBB config
         run: |
-          echo "修改TBB文件以兼容Emscripten..."
+          # 创建一个自定义的TBB配置文件
+          mkdir -p cmake_custom
+          cat > cmake_custom/tbb_config.cmake << 'EOL'
+          # 禁用TBB共享库
+          set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
+          set(TBB_BUILD_SHARED OFF CACHE BOOL "Build TBB shared library" FORCE)
+          set(TBB_ENABLE_SHARED OFF CACHE BOOL "Enable TBB shared library" FORCE)
           
-          # 1. 修复Threads::Threads问题
-          TBB_CLANG_FILE="wowViewerLib/3rdparty/oneTbb/cmake/compilers/Clang.cmake"
-          if [ -f "$TBB_CLANG_FILE" ]; then
-            echo "正在修改 $TBB_CLANG_FILE"
-            sed -i 's/set_property(TARGET Threads::Threads PROPERTY INTERFACE_COMPILE_OPTIONS ${TBB_COMMON_COMPILE_FLAGS})/if(TARGET Threads::Threads)\n  set_property(TARGET Threads::Threads PROPERTY INTERFACE_COMPILE_OPTIONS ${TBB_COMMON_COMPILE_FLAGS})\nendif()/g' "$TBB_CLANG_FILE"
-            echo "修改后的文件内容:"
-            cat "$TBB_CLANG_FILE" | grep -A5 -B5 "Threads::Threads"
-          else
-            echo "错误：找不到文件 $TBB_CLANG_FILE"
-            exit 1
-          fi
+          # 确保TBB严格模式打开
+          set(TBB_STRICT ON CACHE BOOL "Enable strict mode" FORCE)
           
-          # 2. 修复共享库问题
-          TBB_SRC_CMAKE="wowViewerLib/3rdparty/oneTbb/src/tbb/CMakeLists.txt"
-          if [ -f "$TBB_SRC_CMAKE" ]; then
-            echo "正在修改 $TBB_SRC_CMAKE"
-            sed -i 's/add_library(tbb SHARED/add_library(tbb STATIC/g' "$TBB_SRC_CMAKE"
-            echo "修改后的文件内容:"
-            cat "$TBB_SRC_CMAKE" | grep -A3 -B3 "add_library"
-          else
-            echo "错误：找不到文件 $TBB_SRC_CMAKE"
-            exit 1
-          fi
+          # 禁用TBB测试
+          set(TBB_TEST OFF CACHE BOOL "Enable TBB tests" FORCE)
           
-          # 3. 修改主TBB CMakeLists.txt禁用共享库
-          TBB_MAIN_CMAKE="wowViewerLib/3rdparty/oneTbb/CMakeLists.txt"
-          if [ -f "$TBB_MAIN_CMAKE" ]; then
-            echo "正在修改 $TBB_MAIN_CMAKE"
-            
-            # 添加更多EMSCRIPTEN相关设置
-            sed -i '/if(EMSCRIPTEN)/a \
-              message("Configuring for Emscripten")\n \
-              set(TBB_ENABLE_SHARED OFF CACHE BOOL "Build shared TBB libs" FORCE)\n \
-              set(TBB_WINDOWS_DRIVER OFF CACHE BOOL "Build the TBB with Windows driver" FORCE)\n \
-              add_definitions(-DTBB_USE_EXCEPTIONS=0)\n \
-              add_definitions(-DTBB_ALLOCATOR_BYPASS=1)\n \
-              add_definitions(-DTBB_SUPPRESS_DEPRECATED_MESSAGES=1)\n \
-              find_package(Threads QUIET)\n \
-              if(NOT Threads_FOUND)\n \
-                add_library(Threads_Threads INTERFACE)\n \
-                add_library(Threads::Threads ALIAS Threads_Threads)\n \
-              endif()' "$TBB_MAIN_CMAKE"
-              
-            echo "修改后的文件内容:"
-            cat "$TBB_MAIN_CMAKE" | grep -A15 -B3 "if(EMSCRIPTEN)"
-          else
-            echo "错误：找不到文件 $TBB_MAIN_CMAKE"
-            exit 1
-          fi
-      
-      # 创建预配置文件
-      - name: Create CMake Preload Script
-        run: |
-          cat > emscripten_preload.cmake << 'EOL'
-          # 设置TBB选项
-          set(TBB_STRICT ON CACHE BOOL "")
-          set(TBB_TEST OFF CACHE BOOL "")
-          set(TBB_ENABLE_SHARED OFF CACHE BOOL "")
-          set(TBB_WINDOWS_DRIVER OFF CACHE BOOL "")
+          # 添加线程支持
+          if(NOT TARGET Threads::Threads)
+            add_library(Threads_Threads INTERFACE)
+            add_library(Threads::Threads ALIAS Threads_Threads)
+          endif()
           
-          # 定义预处理标志
-          add_compile_definitions(TBB_USE_EXCEPTIONS=0)
-          add_compile_definitions(TBB_ALLOCATOR_BYPASS=1)
-          add_compile_definitions(TBB_SUPPRESS_DEPRECATED_MESSAGES=1)
+          # 禁用TBB异常
+          add_definitions(-DTBB_USE_EXCEPTIONS=0)
+          add_definitions(-DTBB_IMPLEMENT_CPP0X=0)
           
-          # 显式设置编译选项，禁用异常和RTTI
-          set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions -fno-rtti")
-          
-          # 禁用共享库
-          set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+          # 其他Emscripten特定设置
+          if(EMSCRIPTEN)
+            add_definitions(-DTBB_USE_EXCEPTIONS=0)
+            add_definitions(-DTBB_ALLOCATOR_BYPASS=1)
+          endif()
           EOL
       
-      # 配置CMake
-      - name: Configure CMake
+      # 准备一个模块化的构建脚本
+      - name: Prepare build script
         run: |
-          echo "配置CMake..."
+          cat > build_wasm.sh << 'EOL'
+          #!/bin/bash
+          set -e
+          
+          # 设置Emscripten环境
           source $EMSDK/emsdk_env.sh
+          
+          # 创建构建目录
           mkdir -p build
           cd build
           
-          # 使用emcmake配置，传递我们的预加载脚本
+          # 配置CMake
           emcmake cmake \
             ../emscripten_port \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX:PATH=../instdir \
-            -C ../emscripten_preload.cmake
-      
-      # 构建项目
-      - name: Build
-        working-directory: build
-        run: |
-          echo "开始构建项目..."
-          source $EMSDK/emsdk_env.sh
-          # 使用单线程构建，以减少内存使用
-          emmake make project -j1 VERBOSE=1
-          echo "构建完成"
+            -C ../cmake_custom/tbb_config.cmake \
+            -DEMSCRIPTEN_GENERATE_BITCODE_STATIC_LIBRARIES=ON
           
-          # 检查构建结果
-          echo "构建结果目录结构:"
-          find ../ -name "project.*" -type f
+          # 构建项目
+          emmake make -j2 VERBOSE=1
+          
+          # 寻找构建产物
+          echo "构建结果:"
+          find .. -name "project.js" -o -name "project.wasm" -o -name "project.data"
+          
+          # 返回到原目录
+          cd ..
+          EOL
+          
+          chmod +x build_wasm.sh
       
-      # 复制生成的WebAssembly文件
-      - name: Prepare artifacts
+      # 尝试构建
+      - name: Build WebAssembly
         run: |
-          echo "准备构建产物..."
+          # 设置Emscripten环境变量
+          source $EMSDK/emsdk_env.sh
+          
+          # 禁用TBB共享库和异常处理的环境变量
+          export EM_COMPILER_WRAPPER="--no-entry"
+          export EM_CACHE_LINK_FLAGS="--no-entry"
+          export EM_COMPILER_WRAPPER="--no-exceptions"
+          
+          # 执行构建脚本
+          ./build_wasm.sh
+      
+      # 收集构建产物
+      - name: Collect build artifacts
+        run: |
           mkdir -p wasm_build
           
-          # 查找所有project.*文件并复制到wasm_build
-          for file in $(find . -name "project.*" -type f); do
+          # 查找并复制WebAssembly文件
+          for file in $(find . -name "project.js" -o -name "project.wasm" -o -name "project.data"); do
             cp "$file" wasm_build/
             echo "已复制: $file 到 wasm_build/"
           done
           
+          # 如果没有找到文件，尝试从其他地方复制
+          if [ ! "$(ls -A wasm_build 2>/dev/null)" ]; then
+            echo "警告: 没有找到标准命名的文件，尝试查找其他可能的WebAssembly文件..."
+            for file in $(find . -name "*.js" -o -name "*.wasm" -o -name "*.data" | grep -v "node_modules"); do
+              cp "$file" wasm_build/
+              echo "已复制: $file 到 wasm_build/"
+            done
+          fi
+          
           echo "wasm_build目录内容:"
           ls -la wasm_build/ || echo "wasm_build目录为空"
+      
+      # 尝试备用构建方法
+      - name: Try alternate build method if needed
+        if: success() != true
+        run: |
+          echo "主要构建方法失败，尝试备用方法..."
+          source $EMSDK/emsdk_env.sh
+          
+          # 创建一个简单的CMake构建文件
+          cat > simple_build.cmake << 'EOL'
+          cmake_minimum_required(VERSION 3.10)
+          project(EmscriptenBuild)
+          
+          # 设置选项以禁用TBB共享库
+          set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+          set(TBB_ENABLE_SHARED OFF CACHE BOOL "" FORCE)
+          set(TBB_TEST OFF CACHE BOOL "" FORCE)
+          
+          # 添加emscripten_port子目录
+          add_subdirectory(emscripten_port)
+          EOL
+          
+          # 尝试使用简化的构建方法
+          mkdir -p build_alt
+          cd build_alt
+          emcmake cmake -P ../simple_build.cmake
+          emmake make -j2
+          cd ..
+          
+          # 收集任何生成的文件
+          for file in $(find build_alt -name "*.js" -o -name "*.wasm" -o -name "*.data"); do
+            cp "$file" wasm_build/
+            echo "已复制: $file 到 wasm_build/"
+          done
       
       # 上传构建产物
       - name: Upload WebAssembly artifacts
