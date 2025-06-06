@@ -50,7 +50,7 @@ jobs:
         - cd build
         - cmake .. -DCMAKE_BUILD_TYPE=$BUILD_CONFIGURATION -DTARGET_CPU=$TARGET_CPU
         - cmake --build . --target AWebWoWViewerCpp
-    #Compile for emscripten
+    #Compile for emscripten11
     - name: "Emscripten version"
       install:
         - sudo mkdir /opt/cmake
