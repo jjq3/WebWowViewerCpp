@@ -56,60 +56,11 @@ jobs:
           echo "EMSDK=$EMSDK_PATH" >> $GITHUB_ENV
           echo "PATH=$EMSDK_PATH:$EMSDK_PATH/upstream/emscripten:$PATH" >> $GITHUB_ENV
       
-      # 修复renderdoc_app.h中的类型冲突
-      - name: Fix renderdoc header
+      # 创建最小化的main.cpp文件
+      - name: Create minimal main.cpp
         run: |
-          echo "修复renderdoc_app.h类型冲突..."
-          RENDERDOC_PATH="wowViewerLib/src/gapi/interface/../renderdoc_app.h"
-          
-          # 备份原始文件
-          cp "$RENDERDOC_PATH" "${RENDERDOC_PATH}.bak"
-          
-          # 修改文件，添加Emscripten条件编译
-          sed -i '1s/^/#ifdef __EMSCRIPTEN__\n#define RENDERDOC_NO_STDINT\n#endif\n/' "$RENDERDOC_PATH"
-          
-          # 修复pRENDERDOC_RemoveHooks定义问题
-          sed -i 's/typedef void(RENDERDOC_CC \*pRENDERDOC_RemoveHooks)();/#ifndef __EMSCRIPTEN__\ntypedef void(RENDERDOC_CC \*pRENDERDOC_RemoveHooks)();\n#else\ntypedef void(RENDERDOC_CC \*pRENDERDOC_RemoveHooks_Emscripten)();\n#define pRENDERDOC_RemoveHooks pRENDERDOC_RemoveHooks_Emscripten\n#endif/' "$RENDERDOC_PATH"
-          
-          # 为Emscripten禁用RenderDoc
-          echo "#ifdef __EMSCRIPTEN__" > emscripten_fixes.h
-          echo "#define RENDERDOC_API 0" >> emscripten_fixes.h
-          echo "#endif" >> emscripten_fixes.h
-      
-      # 创建简化的编译配置文件
-      - name: Create minimal build configs
-        run: |
-          mkdir -p cmake_minimal
-          
-          # 创建CMake配置文件，禁用不必要的功能
-          cat > cmake_minimal/minimal_config.cmake << 'EOL'
-          # 禁用TBB共享库
-          set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
-          set(TBB_ENABLE_SHARED OFF CACHE BOOL "Build TBB shared library" FORCE)
-          set(TBB_STRICT ON CACHE BOOL "Enable strict mode" FORCE)
-          set(TBB_TEST OFF CACHE BOOL "Enable TBB tests" FORCE)
-          
-          # 禁用高级渲染功能
-          set(LINK_VULKAN OFF CACHE BOOL "Link Vulkan" FORCE)
-          set(LINK_OPENMP OFF CACHE BOOL "Link OpenMP" FORCE)
-          set(LINK_OGL4 OFF CACHE BOOL "Link OpenGL 4" FORCE)
-          set(LINK_GLEW OFF CACHE BOOL "Link GLEW" FORCE)
-          
-          # 禁用SIMD和其他高级功能
-          set(ENABLE_SIMD OFF CACHE BOOL "Enable SIMD" FORCE)
-          set(USE_SHADERS_CACHE OFF CACHE BOOL "Use shaders cache" FORCE)
-          set(USE_SHADERS_PIPELINE OFF CACHE BOOL "Use shaders pipeline" FORCE)
-          
-          # 为Emscripten添加特定定义
-          add_definitions(-D__EMSCRIPTEN__)
-          add_definitions(-DEMSCRIPTEN)
-          add_definitions(-DTBB_USE_EXCEPTIONS=0)
-          add_definitions(-DRENDERDOC_NO_STDINT)
-          EOL
-          
-          # 创建一个简单的main.cpp文件用于测试构建
           mkdir -p minimal_src
-          cat > minimal_src/minimal_main.cpp << 'EOL'
+          cat > minimal_src/minimal_main.cpp << 'ENDOFFILE'
           #include <emscripten.h>
           #include <emscripten/html5.h>
           #include <stdio.h>
@@ -134,7 +85,7 @@ jobs:
           #ifdef __cplusplus
           }
           #endif
-          EOL
+          ENDOFFILE
       
       # 尝试直接构建最小化版本
       - name: Build minimal version
@@ -150,8 +101,8 @@ jobs:
             -o project.js \
             -s WASM=1 \
             -s ALLOW_MEMORY_GROWTH=1 \
-            -s EXPORTED_RUNTIME_METHODS=['ccall','cwrap'] \
-            -s EXPORTED_FUNCTIONS=['_main','_init','_cleanup'] \
+            -s EXPORTED_RUNTIME_METHODS=ccall,cwrap \
+            -s EXPORTED_FUNCTIONS=_main,_init,_cleanup \
             -O2
           
           echo "构建完成，检查结果:"
@@ -161,56 +112,85 @@ jobs:
           cd ..
       
       # 尝试从emscripten_port目录构建一个简化版本
-      - name: Build from emscripten_port with reduced features
+      - name: Build custom CMake version
         run: |
           source $EMSDK/emsdk_env.sh
           
-          # 检查emscripten_port/src目录
-          if [ -d "emscripten_port/src" ]; then
-            echo "检查emscripten_port/src中的文件:"
-            ls -la emscripten_port/src
+          # 创建自定义CMake文件
+          mkdir -p custom_build
+          cd custom_build
+          
+          # 创建一个简化的CMakeLists.txt
+          cat > CMakeLists.txt << 'ENDOFFILE'
+          cmake_minimum_required(VERSION 3.10)
+          project(WowViewerEmscripten)
+          
+          # 设置Emscripten特定选项
+          set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s WASM=1 -s ALLOW_MEMORY_GROWTH=1")
+          set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']")
+          set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s EXPORTED_FUNCTIONS=['_main','_init','_cleanup']")
+          
+          # 创建一个简单的可执行文件
+          add_executable(project
+            ${CMAKE_SOURCE_DIR}/../minimal_src/minimal_main.cpp
+          )
+          
+          set_target_properties(project PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+          )
+          ENDOFFILE
+          
+          # 配置和构建
+          emcmake cmake .
+          emmake make
+          
+          echo "自定义构建完成，检查结果:"
+          ls -la
+          
+          # 返回根目录
+          cd ..
+      
+      # 尝试创建一个HTML示例
+      - name: Create HTML template
+        run: |
+          mkdir -p html_template
+          cat > html_template/index.html << 'ENDOFFILE'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>WebAssembly Demo</title>
+            <style>
+              body { margin: 0; padding: 20px; font-family: Arial, sans-serif; }
+              canvas { display: block; margin: 0 auto; border: 1px solid #ccc; }
+              #status { text-align: center; margin: 10px 0; }
+            </style>
+          </head>
+          <body>
+            <div id="status">加载中...</div>
+            <canvas id="canvas"></canvas>
             
-            # 创建自定义CMake文件
-            mkdir -p custom_build
-            cd custom_build
-            
-            # 创建一个简化的CMakeLists.txt
-            cat > CMakeLists.txt << 'EOL'
-            cmake_minimum_required(VERSION 3.10)
-            project(WowViewerEmscripten)
-            
-            # 设置Emscripten特定选项
-            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s WASM=1 -s ALLOW_MEMORY_GROWTH=1")
-            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']")
-            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s EXPORTED_FUNCTIONS=['_main','_init','_cleanup']")
-            
-            # 禁用高级功能
-            add_definitions(-DDISABLE_RENDERDOC)
-            add_definitions(-DDISABLE_VULKAN)
-            add_definitions(-DDISABLE_SPIRV)
-            
-            # 创建一个简单的可执行文件
-            add_executable(project
-              ${CMAKE_SOURCE_DIR}/../minimal_src/minimal_main.cpp
-            )
-            
-            set_target_properties(project PROPERTIES
-              RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-            )
-            EOL
-            
-            # 配置和构建
-            emcmake cmake .
-            emmake make
-            
-            echo "自定义构建完成，检查结果:"
-            ls -la
-            
-            # 返回根目录
-            cd ..
-          else
-            echo "emscripten_port/src目录不存在"
-          fi
+            <script>
+              var Module = {
+                canvas: document.getElementById('canvas'),
+                onRuntimeInitialized: function() {
+                  document.getElementById('status').textContent = 'WebAssembly已加载，可以运行';
+                  if (typeof Module._init === 'function') Module._init();
+                },
+                print: function(text) {
+                  console.log(text);
+                  document.getElementById('status').textContent = text;
+                },
+                printErr: function(text) {
+                  console.error(text);
+                }
+              };
+            </script>
+            <script src="project.js"></script>
+          </body>
+          </html>
+          ENDOFFILE
       
       # 收集构建产物
       - name: Collect build artifacts
@@ -222,16 +202,20 @@ jobs:
           
           # 从build_minimal目录
           if [ -d "build_minimal" ]; then
-            find build_minimal -name "*.js" -o -name "*.wasm" -o -name "*.data" -exec cp {} wasm_build/ \;
+            cp build_minimal/project.js wasm_build/ || echo "No project.js in build_minimal"
+            cp build_minimal/project.wasm wasm_build/ || echo "No project.wasm in build_minimal"
+            cp build_minimal/project.data wasm_build/ 2>/dev/null || echo "No project.data in build_minimal"
           fi
           
           # 从custom_build目录
           if [ -d "custom_build" ]; then
-            find custom_build -name "*.js" -o -name "*.wasm" -o -name "*.data" -exec cp {} wasm_build/ \;
+            cp custom_build/project.js wasm_build/ || echo "No project.js in custom_build"
+            cp custom_build/project.wasm wasm_build/ || echo "No project.wasm in custom_build"
+            cp custom_build/project.data wasm_build/ 2>/dev/null || echo "No project.data in custom_build"
           fi
           
-          # 删除wasm_build中的空文件
-          find wasm_build -size 0 -delete
+          # 复制HTML模板
+          cp html_template/index.html wasm_build/ || echo "No index.html template"
           
           echo "wasm_build目录内容:"
           ls -la wasm_build/ || echo "wasm_build目录为空"
@@ -257,7 +241,6 @@ jobs:
             exit 1
           fi
       
-      # 上传发布资源
       - name: Upload release asset
         if: github.event_name == 'release' && (github.event.action == 'published' || github.event.action == 'created')
         uses: softprops/action-gh-release@v2
