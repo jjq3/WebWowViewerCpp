@@ -35,8 +35,6 @@ jobs:
           ls -la
           echo "查看emscripten_port目录:"
           ls -la emscripten_port || echo "emscripten_port目录不存在"
-          echo "检查wowViewerLib目录:"
-          ls -la wowViewerLib || echo "wowViewerLib目录不存在"
       
       # 安装依赖
       - name: Install dependencies
@@ -57,11 +55,10 @@ jobs:
           ./emsdk activate 3.1.19
           echo "Emscripten SDK安装完成"
           
-          # 设置环境变量以在后续步骤中使用
-          echo "EMSDK=$(pwd)" >> $GITHUB_ENV
-          echo "EM_CONFIG=$(pwd)/.emscripten" >> $GITHUB_ENV
-          echo "EMSDK_NODE=$(pwd)/node/14.18.2_64bit/bin/node" >> $GITHUB_ENV
-          echo "PATH=$(pwd):$(pwd)/upstream/emscripten:$(pwd)/node/14.18.2_64bit/bin:$PATH" >> $GITHUB_ENV
+          # 为后续步骤设置环境变量
+          EMSDK_PATH="$(pwd)"
+          echo "EMSDK=$EMSDK_PATH" >> $GITHUB_ENV
+          echo "PATH=$EMSDK_PATH:$EMSDK_PATH/upstream/emscripten:$EMSDK_PATH/node/14.18.2_64bit/bin:$PATH" >> $GITHUB_ENV
       
       # 验证Emscripten安装
       - name: Verify Emscripten
@@ -69,147 +66,137 @@ jobs:
           source $EMSDK/emsdk_env.sh
           emcc --version
           which emcc
-          which em++
       
-      # 创建自定义TBB CMake配置
-      - name: Create custom TBB config
+      # 准备TBB配置
+      - name: Prepare TBB config
         run: |
-          # 创建一个自定义的TBB配置文件
           mkdir -p cmake_custom
+          
+          # 创建TBB配置文件
           cat > cmake_custom/tbb_config.cmake << 'EOL'
           # 禁用TBB共享库
           set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
           set(TBB_BUILD_SHARED OFF CACHE BOOL "Build TBB shared library" FORCE)
           set(TBB_ENABLE_SHARED OFF CACHE BOOL "Enable TBB shared library" FORCE)
           
-          # 确保TBB严格模式打开
+          # TBB设置
           set(TBB_STRICT ON CACHE BOOL "Enable strict mode" FORCE)
-          
-          # 禁用TBB测试
           set(TBB_TEST OFF CACHE BOOL "Enable TBB tests" FORCE)
-          
-          # 添加线程支持
-          if(NOT TARGET Threads::Threads)
-            add_library(Threads_Threads INTERFACE)
-            add_library(Threads::Threads ALIAS Threads_Threads)
-          endif()
           
           # 禁用TBB异常
           add_definitions(-DTBB_USE_EXCEPTIONS=0)
           add_definitions(-DTBB_IMPLEMENT_CPP0X=0)
-          
-          # 其他Emscripten特定设置
-          if(EMSCRIPTEN)
-            add_definitions(-DTBB_USE_EXCEPTIONS=0)
-            add_definitions(-DTBB_ALLOCATOR_BYPASS=1)
-          endif()
+          add_definitions(-DTBB_ALLOCATOR_BYPASS=1)
           EOL
-      
-      # 准备一个模块化的构建脚本
-      - name: Prepare build script
-        run: |
-          cat > build_wasm.sh << 'EOL'
-          #!/bin/bash
-          set -e
           
-          # 设置Emscripten环境
+          # 创建补丁文件
+          cat > patch_threads.patch << 'EOL'
+          --- a/wowViewerLib/3rdparty/oneTbb/cmake/compilers/Clang.cmake
+          +++ b/wowViewerLib/3rdparty/oneTbb/cmake/compilers/Clang.cmake
+          @@ -17,7 +17,9 @@ if (NOT MSVC)
+               set(TBB_LIB_COMPILE_FLAGS -fPIC -Wno-missing-braces)
+           endif()
+           
+          -set_property(TARGET Threads::Threads PROPERTY INTERFACE_COMPILE_OPTIONS ${TBB_COMMON_COMPILE_FLAGS})
+          +if (TARGET Threads::Threads)
+          +  set_property(TARGET Threads::Threads PROPERTY INTERFACE_COMPILE_OPTIONS ${TBB_COMMON_COMPILE_FLAGS})
+          +endif()
+          EOL
+          
+          # 尝试应用补丁
+          patch -p1 < patch_threads.patch || echo "补丁应用失败，可能已经修改过或文件不匹配"
+      
+      # 配置并构建 - 使用Ninja构建系统
+      - name: Configure and build
+        run: |
           source $EMSDK/emsdk_env.sh
           
-          # 创建构建目录
+          # 创建并进入构建目录
           mkdir -p build
           cd build
           
-          # 配置CMake
-          emcmake cmake \
-            ../emscripten_port \
+          # 配置项目使用Ninja构建系统
+          echo "配置CMake使用Ninja..."
+          emcmake cmake ../emscripten_port \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX:PATH=../instdir \
-            -C ../cmake_custom/tbb_config.cmake \
-            -DEMSCRIPTEN_GENERATE_BITCODE_STATIC_LIBRARIES=ON
+            -DCMAKE_INSTALL_PREFIX=../instdir \
+            -DTBB_STRICT=ON \
+            -DTBB_TEST=OFF \
+            -DTBB_ENABLE_SHARED=OFF \
+            -C ../cmake_custom/tbb_config.cmake
           
           # 构建项目
-          emmake make -j2 VERBOSE=1
+          echo "开始构建..."
+          emmake ninja
           
-          # 寻找构建产物
-          echo "构建结果:"
-          find .. -name "project.js" -o -name "project.wasm" -o -name "project.data"
-          
-          # 返回到原目录
-          cd ..
-          EOL
-          
-          chmod +x build_wasm.sh
+          echo "构建完成，查找结果..."
+          find .. -name "project.*" -type f
       
-      # 尝试构建
-      - name: Build WebAssembly
+      # 尝试直接编译main.cpp（如果上面的构建失败）
+      - name: Try direct compilation
+        if: failure()
         run: |
-          # 设置Emscripten环境变量
           source $EMSDK/emsdk_env.sh
           
-          # 禁用TBB共享库和异常处理的环境变量
-          export EM_COMPILER_WRAPPER="--no-entry"
-          export EM_CACHE_LINK_FLAGS="--no-entry"
-          export EM_COMPILER_WRAPPER="--no-exceptions"
+          echo "尝试直接编译main.cpp..."
+          # 检查main.cpp文件位置
+          find . -name "main.cpp" | grep -v node_modules
           
-          # 执行构建脚本
-          ./build_wasm.sh
+          # 如果找到emscripten_port/src/main.cpp，尝试直接编译
+          if [ -f "emscripten_port/src/main.cpp" ]; then
+            mkdir -p direct_build
+            cd direct_build
+            
+            # 编译main.cpp为WebAssembly
+            echo "编译main.cpp..."
+            emcc ../emscripten_port/src/main.cpp \
+              -o project.js \
+              -s WASM=1 \
+              -s ALLOW_MEMORY_GROWTH=1 \
+              -s ASSERTIONS=1 \
+              -O2
+            
+            echo "直接编译结果:"
+            ls -la
+            
+            # 回到根目录
+            cd ..
+          else
+            echo "未找到main.cpp文件"
+          fi
       
       # 收集构建产物
       - name: Collect build artifacts
         run: |
           mkdir -p wasm_build
           
-          # 查找并复制WebAssembly文件
-          for file in $(find . -name "project.js" -o -name "project.wasm" -o -name "project.data"); do
-            cp "$file" wasm_build/
-            echo "已复制: $file 到 wasm_build/"
-          done
+          # 从所有可能的位置收集构建产物
+          echo "收集构建产物..."
           
-          # 如果没有找到文件，尝试从其他地方复制
+          # 从build目录
+          if [ -d "build" ]; then
+            find build -name "project.js" -o -name "project.wasm" -o -name "project.data" -exec cp {} wasm_build/ \;
+          fi
+          
+          # 从build_packed目录
+          if [ -d "build_packed" ]; then
+            find build_packed -name "project.js" -o -name "project.wasm" -o -name "project.data" -exec cp {} wasm_build/ \;
+          fi
+          
+          # 从direct_build目录
+          if [ -d "direct_build" ]; then
+            find direct_build -name "project.js" -o -name "project.wasm" -o -name "project.data" -exec cp {} wasm_build/ \;
+          fi
+          
+          # 如果还是没找到，搜索整个仓库
           if [ ! "$(ls -A wasm_build 2>/dev/null)" ]; then
-            echo "警告: 没有找到标准命名的文件，尝试查找其他可能的WebAssembly文件..."
-            for file in $(find . -name "*.js" -o -name "*.wasm" -o -name "*.data" | grep -v "node_modules"); do
-              cp "$file" wasm_build/
-              echo "已复制: $file 到 wasm_build/"
-            done
+            echo "在构建目录中未找到文件，搜索整个仓库..."
+            find . -name "*.js" -o -name "*.wasm" -o -name "*.data" | grep -v node_modules | head -n 10 | xargs -I{} cp {} wasm_build/ || true
           fi
           
           echo "wasm_build目录内容:"
           ls -la wasm_build/ || echo "wasm_build目录为空"
-      
-      # 尝试备用构建方法
-      - name: Try alternate build method if needed
-        if: success() != true
-        run: |
-          echo "主要构建方法失败，尝试备用方法..."
-          source $EMSDK/emsdk_env.sh
-          
-          # 创建一个简单的CMake构建文件
-          cat > simple_build.cmake << 'EOL'
-          cmake_minimum_required(VERSION 3.10)
-          project(EmscriptenBuild)
-          
-          # 设置选项以禁用TBB共享库
-          set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-          set(TBB_ENABLE_SHARED OFF CACHE BOOL "" FORCE)
-          set(TBB_TEST OFF CACHE BOOL "" FORCE)
-          
-          # 添加emscripten_port子目录
-          add_subdirectory(emscripten_port)
-          EOL
-          
-          # 尝试使用简化的构建方法
-          mkdir -p build_alt
-          cd build_alt
-          emcmake cmake -P ../simple_build.cmake
-          emmake make -j2
-          cd ..
-          
-          # 收集任何生成的文件
-          for file in $(find build_alt -name "*.js" -o -name "*.wasm" -o -name "*.data"); do
-            cp "$file" wasm_build/
-            echo "已复制: $file 到 wasm_build/"
-          done
       
       # 上传构建产物
       - name: Upload WebAssembly artifacts
