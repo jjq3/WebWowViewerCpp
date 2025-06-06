@@ -1,0 +1,130 @@
+name: WebAssembly Build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  release:
+    types: [created]
+  # 允许手动触发
+  workflow_dispatch:
+
+jobs:
+  build-wasm:
+    name: Emscripten Build
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 检出代码，包括子模块
+      - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
+      
+      # 设置Python
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      # 打印环境信息
+      - name: Print env
+        run: |
+          echo github.event.action: ${{ github.event.action }}
+          echo github.event_name: ${{ github.event_name }}
+      
+      # 安装依赖
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake xorg-dev libglu1-mesa-dev
+          ninja --version
+          cmake --version
+          gcc --version
+      
+      # 设置Emscripten
+      - name: Setup emsdk
+        uses: mymindstorm/setup-emsdk@v11
+        with:
+          version: '3.1.19'
+          actions-cache-folder: 'emsdk-cache'
+      
+      # 修补TBB以解决线程问题
+      - name: Patch TBB for Emscripten
+        shell: bash
+        run: |
+          cat > patch_tbb.txt << 'EOL'
+          diff --git a/wowViewerLib/3rdparty/oneTbb/cmake/compilers/Clang.cmake b/wowViewerLib/3rdparty/oneTbb/cmake/compilers/Clang.cmake
+          index xxxxxxx..xxxxxxx 100644
+          --- a/wowViewerLib/3rdparty/oneTbb/cmake/compilers/Clang.cmake
+          +++ b/wowViewerLib/3rdparty/oneTbb/cmake/compilers/Clang.cmake
+          @@ -17,7 +17,9 @@ if (NOT MSVC)
+               set(TBB_LIB_COMPILE_FLAGS -fPIC -Wno-missing-braces)
+           endif()
+           
+          -set_property(TARGET Threads::Threads PROPERTY INTERFACE_COMPILE_OPTIONS ${TBB_COMMON_COMPILE_FLAGS})
+          +if (TARGET Threads::Threads)
+          +  set_property(TARGET Threads::Threads PROPERTY INTERFACE_COMPILE_OPTIONS ${TBB_COMMON_COMPILE_FLAGS})
+          +endif()
+          EOL
+          
+          patch -p1 < patch_tbb.txt
+      
+      # 添加TBB配置修改
+      - name: Modify wowViewerLib CMakeLists.txt
+        run: |
+          sed -i '/if (EMSCRIPTEN)/,/ENDIF()/c\if (EMSCRIPTEN)\n    message(This is EMSCRIPTEN)\n    set(LINK_GLEW 0)\n    set(LINK_VULKAN OFF)\n    set(LINK_OPENMP 0)\n    set(LINK_OGL4 0)\n    set(TBB_STRICT ON CACHE BOOL "")\n    if (NOT EMSCRIPTEN_SIMD)\n        set(ENABLE_SIMD 0)\n    endif()\n    add_definitions("-DTBB_USE_EXCEPTIONS=0")\nENDIF()' wowViewerLib/CMakeLists.txt
+      
+      # 配置CMake
+      - name: Configure CMake
+        run: |
+          cd emsdk-cache
+          TOOLCHAIN_LOC="$(find ~+ . -name 'Emscripten.cmake' -print -quit)"
+          cd ..
+          mkdir -p build
+          mkdir -p instdir
+          cd build
+          
+          cmake \
+            -S ../emscripten_port \
+            -B . \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_LOC} \
+            -DCMAKE_INSTALL_PREFIX:PATH=../instdir \
+            -DTBB_STRICT=ON \
+            -DTBB_TEST=OFF \
+            -DTBB_ENABLE_SHARED=OFF
+      
+      # 构建项目
+      - name: Build
+        working-directory: build
+        run: |
+          emmake make project
+      
+      # 复制生成的WebAssembly文件
+      - name: Prepare artifacts
+        run: |
+          mkdir -p wasm_build
+          cp build_packed/project.js wasm_build/
+          cp build_packed/project.wasm wasm_build/
+          cp build_packed/project.data wasm_build/
+      
+      # 上传构建产物
+      - name: Upload WebAssembly artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: wasm-build
+          path: wasm_build/
+      
+      # 如果是发布，打包并上传
+      - name: Pack release asset
+        if: github.event_name == 'release' && (github.event.action == 'published' || github.event.action == 'created')
+        run: |
+          cd wasm_build
+          7z a ../wasm-build.zip .
+      
+      - name: Upload release asset
+        if: github.event_name == 'release' && (github.event.action == 'published' || github.event.action == 'created')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: wasm-build.zip
