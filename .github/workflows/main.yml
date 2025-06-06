@@ -111,12 +111,32 @@ jobs:
         if: startsWith(matrix.config.name, 'emscripten')
         uses: mymindstorm/setup-emsdk@v11
         with:
-          # Make sure to set a version number!
           version: 3.1.19
-          # This is the name of the cache folder.
-          # The cache folder will be placed in the build directory,
-          #  so make sure it doesn't conflict with anything!
           actions-cache-folder: "emsdk-cache"
+
+      - name: Configure emscripten
+        if: startsWith(matrix.config.name, 'emscripten')
+        shell: bash
+        run: |
+          TOOLCHAIN_LOC="$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
+          
+          if [ ! -f "$TOOLCHAIN_LOC" ]; then
+            echo "❌ 错误：未找到Emscripten工具链文件：$TOOLCHAIN_LOC"
+            exit 1
+          fi
+
+          mkdir -p build
+          mkdir -p instdir
+          INSTALL_LOC="$PWD/instdir"
+          
+          cd build
+          cmake \
+            -S ../emscripten_port \
+            -B . \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_BUILD_TYPE=${{ matrix.config.build_type }} \
+            -DCMAKE_TOOLCHAIN_FILE=$TOOLCHAIN_LOC \
+            -DCMAKE_INSTALL_PREFIX:PATH=$INSTALL_LOC
 
       - name: Install dependencies on ubuntu
         if: startsWith(matrix.config.name, 'Ubuntu_Latest_GCC')
