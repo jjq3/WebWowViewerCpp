@@ -20,29 +20,28 @@ jobs:
         with:
           submodules: 'recursive'
       
-      # 设置Python
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-      
-      # 打印环境信息
-      - name: Print env
+      # 显示项目结构
+      - name: Show project structure
         run: |
-          echo github.event.action: ${{ github.event.action }}
-          echo github.event_name: ${{ github.event_name }}
-          echo "当前目录内容:"
+          echo "项目根目录内容:"
           ls -la
+          echo "emscripten_port目录内容:"
+          ls -la emscripten_port || echo "emscripten_port目录不存在"
+          echo "wowViewerLib目录内容:"
+          ls -la wowViewerLib || echo "wowViewerLib目录不存在"
+          echo "查找CMakeLists.txt文件:"
+          find . -name "CMakeLists.txt" | grep -v node_modules
       
       # 安装依赖
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build cmake xorg-dev libglu1-mesa-dev p7zip-full
+          sudo apt-get install -y ninja-build cmake libgl1-mesa-dev xorg-dev p7zip-full
           ninja --version
           cmake --version
           gcc --version
       
-      # 手动安装Emscripten SDK
+      # 安装Emscripten SDK
       - name: Install Emscripten SDK
         run: |
           echo "正在安装Emscripten SDK..."
@@ -56,127 +55,183 @@ jobs:
           echo "EMSDK=$EMSDK_PATH" >> $GITHUB_ENV
           echo "PATH=$EMSDK_PATH:$EMSDK_PATH/upstream/emscripten:$PATH" >> $GITHUB_ENV
       
-      # 创建最小化的main.cpp文件
-      - name: Create minimal main.cpp
+      # 验证Emscripten安装
+      - name: Verify Emscripten
         run: |
-          mkdir -p minimal_src
-          cat > minimal_src/minimal_main.cpp << 'ENDOFFILE'
-          #include <emscripten.h>
-          #include <emscripten/html5.h>
-          #include <stdio.h>
-
-          int main() {
-            printf("Hello from WebAssembly!\n");
-            return 0;
-          }
-          
-          #ifdef __cplusplus
-          extern "C" {
-          #endif
-          
-          EMSCRIPTEN_KEEPALIVE int init() {
-            return 0;
-          }
-          
-          EMSCRIPTEN_KEEPALIVE void cleanup() {
-            // 清理资源
-          }
-          
-          #ifdef __cplusplus
-          }
-          #endif
-          ENDOFFILE
+          source $EMSDK/emsdk_env.sh
+          emcc --version
       
-      # 尝试直接构建最小化版本
-      - name: Build minimal version
+      # 修复renderdoc相关问题（防止冲突）
+      - name: Fix RenderDoc issues
+        run: |
+          echo "修复RenderDoc相关问题..."
+          RENDERDOC_PATH="wowViewerLib/src/gapi/renderdoc_app.h"
+          if [ -f "$RENDERDOC_PATH" ]; then
+            # 备份原始文件
+            cp "$RENDERDOC_PATH" "${RENDERDOC_PATH}.bak"
+            
+            # 在文件顶部添加Emscripten条件编译
+            sed -i '1i\
+            #ifdef __EMSCRIPTEN__\
+            #define RENDERDOC_NO_STDINT\
+            #define RENDERDOC_IMPORT_API 0\
+            #define RENDERDOC_API_VERSION 10\
+            #endif' "$RENDERDOC_PATH"
+            
+            echo "RenderDoc头文件已修改"
+          fi
+          
+          # 创建补丁文件，处理Threads::Threads相关问题
+          cat > tbb_threads_patch.patch << 'ENDOFPATCH'
+          --- a/wowViewerLib/3rdparty/oneTbb/cmake/compilers/Clang.cmake
+          +++ b/wowViewerLib/3rdparty/oneTbb/cmake/compilers/Clang.cmake
+          @@ -19,7 +19,9 @@
+           
+           if (NOT MSVC)
+               set(TBB_COMMON_COMPILE_FLAGS ${TBB_COMMON_COMPILE_FLAGS} -pthread)
+          -    set_property(TARGET Threads::Threads PROPERTY INTERFACE_COMPILE_OPTIONS ${TBB_COMMON_COMPILE_FLAGS})
+          +    if (TARGET Threads::Threads)
+          +        set_property(TARGET Threads::Threads PROPERTY INTERFACE_COMPILE_OPTIONS ${TBB_COMMON_COMPILE_FLAGS})
+          +    endif()
+               set(TBB_COMMON_LINK_LIBS ${TBB_COMMON_LINK_LIBS} pthread dl)
+           endif()
+           
+          ENDOFPATCH
+          
+          # 应用补丁
+          patch -p1 < tbb_threads_patch.patch || echo "补丁应用失败，可能文件已修改或路径不匹配"
+          
+          # 创建CMake配置文件
+          mkdir -p cmake_config
+          cat > cmake_config/wasm_config.cmake << 'ENDOFCONFIG'
+          # 禁用共享库
+          set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
+          set(TBB_BUILD_SHARED OFF CACHE BOOL "Build TBB shared library" FORCE)
+          set(TBB_ENABLE_SHARED OFF CACHE BOOL "Enable TBB shared library" FORCE)
+          
+          # TBB配置
+          set(TBB_STRICT ON CACHE BOOL "Enable TBB strict mode" FORCE)
+          set(TBB_TEST OFF CACHE BOOL "Enable TBB tests" FORCE)
+          
+          # Emscripten特定设置
+          set(LINK_GLEW OFF CACHE BOOL "Link GLEW" FORCE)
+          set(LINK_VULKAN OFF CACHE BOOL "Link Vulkan" FORCE)
+          set(LINK_OPENMP OFF CACHE BOOL "Link OpenMP" FORCE)
+          set(LINK_OGL4 OFF CACHE BOOL "Link OpenGL 4" FORCE)
+          
+          # 定义预处理宏
+          add_definitions(-DEMSCRIPTEN)
+          add_definitions(-DTBB_USE_EXCEPTIONS=0)
+          ENDOFCONFIG
+      
+      # 构建项目 - 直接使用emscripten_port
+      - name: Build WowViewerCpp for WebAssembly
         run: |
           source $EMSDK/emsdk_env.sh
           
-          echo "构建最小化版本..."
-          mkdir -p build_minimal
-          cd build_minimal
+          # 查看emscripten_port中的CMakeLists.txt
+          echo "检查emscripten_port中的CMake文件:"
+          cat emscripten_port/CMakeLists.txt || echo "emscripten_port/CMakeLists.txt不存在"
           
-          # 编译最小化版本
-          emcc ../minimal_src/minimal_main.cpp \
-            -o project.js \
-            -s WASM=1 \
-            -s ALLOW_MEMORY_GROWTH=1 \
-            -s EXPORTED_RUNTIME_METHODS=ccall,cwrap \
-            -s EXPORTED_FUNCTIONS=_main,_init,_cleanup \
-            -O2
+          # 创建构建目录
+          mkdir -p build
+          cd build
           
-          echo "构建完成，检查结果:"
-          ls -la
+          # 配置项目
+          echo "配置CMake..."
+          emcmake cmake ../emscripten_port \
+            -DCMAKE_BUILD_TYPE=Release \
+            -C ../cmake_config/wasm_config.cmake \
+            -DCMAKE_INSTALL_PREFIX=../wasm_output
           
-          # 返回根目录
+          # 查看生成的CMake配置
+          echo "检查生成的CMake配置..."
+          cat CMakeCache.txt | grep -E "TBB|LINK_|BUILD_SHARED"
+          
+          # 构建项目
+          echo "开始构建..."
+          emmake make -j2 VERBOSE=1
+          
+          # 安装到输出目录
+          echo "安装到输出目录..."
+          emmake make install
+          
           cd ..
       
-      # 尝试从emscripten_port目录构建一个简化版本
-      - name: Build custom CMake version
+      # 检查构建结果
+      - name: Check build results
         run: |
-          source $EMSDK/emsdk_env.sh
+          echo "检查构建产物..."
           
-          # 创建自定义CMake文件
-          mkdir -p custom_build
-          cd custom_build
+          # 检查编译输出目录
+          echo "构建目录内容:"
+          find build -type f -name "*.js" -o -name "*.wasm" -o -name "*.data" | sort
           
-          # 创建一个简化的CMakeLists.txt
-          cat > CMakeLists.txt << 'ENDOFFILE'
-          cmake_minimum_required(VERSION 3.10)
-          project(WowViewerEmscripten)
+          # 检查wasm_output目录
+          echo "安装目录内容:"
+          find wasm_output -type f | sort
           
-          # 设置Emscripten特定选项
-          set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s WASM=1 -s ALLOW_MEMORY_GROWTH=1")
-          set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']")
-          set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s EXPORTED_FUNCTIONS=['_main','_init','_cleanup']")
+          # 检查build_packed目录
+          echo "查找build_packed目录:"
+          find . -name "build_packed" -type d
           
-          # 创建一个简单的可执行文件
-          add_executable(project
-            ${CMAKE_SOURCE_DIR}/../minimal_src/minimal_main.cpp
-          )
-          
-          set_target_properties(project PROPERTIES
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-          )
-          ENDOFFILE
-          
-          # 配置和构建
-          emcmake cmake .
-          emmake make
-          
-          echo "自定义构建完成，检查结果:"
-          ls -la
-          
-          # 返回根目录
-          cd ..
+          if [ -d "build_packed" ]; then
+            echo "build_packed目录内容:"
+            find build_packed -type f | sort
+            
+            # 检查文件大小
+            echo "检查WebAssembly文件大小:"
+            find build_packed -type f -name "project.wasm" -exec du -h {} \;
+          fi
       
-      # 尝试创建一个HTML示例
-      - name: Create HTML template
+      # 准备最终输出
+      - name: Prepare final output
         run: |
-          mkdir -p html_template
-          cat > html_template/index.html << 'ENDOFFILE'
+          mkdir -p wasm_build
+          
+          # 尝试从多个可能的位置收集构建产物
+          # 1. 从build_packed目录
+          if [ -d "build_packed" ] && [ -f "build_packed/project.js" ]; then
+            echo "从build_packed复制文件..."
+            cp build_packed/project.js wasm_build/
+            cp build_packed/project.wasm wasm_build/
+            [ -f "build_packed/project.data" ] && cp build_packed/project.data wasm_build/
+          # 2. 从安装目录
+          elif [ -d "wasm_output" ]; then
+            echo "从wasm_output复制文件..."
+            find wasm_output -type f -name "*.js" -o -name "*.wasm" -o -name "*.data" -exec cp {} wasm_build/ \;
+          # 3. 从构建目录
+          else
+            echo "搜索构建目录中的WebAssembly文件..."
+            find build -type f -name "*.js" -o -name "*.wasm" -o -name "*.data" -exec cp {} wasm_build/ \;
+          fi
+          
+          # 创建HTML模板文件
+          echo "创建HTML模板..."
+          cat > wasm_build/index.html << 'ENDOFHTML'
           <!DOCTYPE html>
           <html lang="en">
           <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>WebAssembly Demo</title>
+            <title>WoW Viewer WebAssembly</title>
             <style>
-              body { margin: 0; padding: 20px; font-family: Arial, sans-serif; }
-              canvas { display: block; margin: 0 auto; border: 1px solid #ccc; }
-              #status { text-align: center; margin: 10px 0; }
+              body { margin: 0; overflow: hidden; background-color: #111; }
+              .container { display: flex; flex-direction: column; height: 100vh; }
+              canvas { width: 100%; height: 100%; display: block; }
+              #status { position: absolute; bottom: 10px; left: 10px; color: white; background-color: rgba(0,0,0,0.5); padding: 5px; }
             </style>
           </head>
           <body>
-            <div id="status">加载中...</div>
-            <canvas id="canvas"></canvas>
-            
+            <div class="container">
+              <canvas id="canvas"></canvas>
+              <div id="status">Loading...</div>
+            </div>
             <script>
               var Module = {
                 canvas: document.getElementById('canvas'),
                 onRuntimeInitialized: function() {
-                  document.getElementById('status').textContent = 'WebAssembly已加载，可以运行';
-                  if (typeof Module._init === 'function') Module._init();
+                  document.getElementById('status').textContent = 'WebAssembly initialized';
                 },
                 print: function(text) {
                   console.log(text);
@@ -187,38 +242,21 @@ jobs:
                 }
               };
             </script>
-            <script src="project.js"></script>
+            <script async src="project.js"></script>
           </body>
           </html>
-          ENDOFFILE
-      
-      # 收集构建产物
-      - name: Collect build artifacts
-        run: |
-          mkdir -p wasm_build
+          ENDOFHTML
           
-          # 从所有可能的位置收集构建产物
-          echo "收集构建产物..."
+          echo "最终输出目录内容:"
+          ls -la wasm_build/
           
-          # 从build_minimal目录
-          if [ -d "build_minimal" ]; then
-            cp build_minimal/project.js wasm_build/ || echo "No project.js in build_minimal"
-            cp build_minimal/project.wasm wasm_build/ || echo "No project.wasm in build_minimal"
-            cp build_minimal/project.data wasm_build/ 2>/dev/null || echo "No project.data in build_minimal"
+          # 检查WebAssembly文件大小
+          echo "检查最终WebAssembly文件大小:"
+          if [ -f "wasm_build/project.wasm" ]; then
+            du -h wasm_build/project.wasm
+          else
+            echo "未找到project.wasm文件!"
           fi
-          
-          # 从custom_build目录
-          if [ -d "custom_build" ]; then
-            cp custom_build/project.js wasm_build/ || echo "No project.js in custom_build"
-            cp custom_build/project.wasm wasm_build/ || echo "No project.wasm in custom_build"
-            cp custom_build/project.data wasm_build/ 2>/dev/null || echo "No project.data in custom_build"
-          fi
-          
-          # 复制HTML模板
-          cp html_template/index.html wasm_build/ || echo "No index.html template"
-          
-          echo "wasm_build目录内容:"
-          ls -la wasm_build/ || echo "wasm_build目录为空"
       
       # 上传构建产物
       - name: Upload WebAssembly artifacts
@@ -236,11 +274,14 @@ jobs:
             cd wasm_build
             7z a ../wasm-build.zip .
             echo "已创建wasm-build.zip"
+            cd ..
+            du -h wasm-build.zip
           else
             echo "警告: wasm_build目录为空，无法创建发布包"
             exit 1
           fi
       
+      # 上传发布资源
       - name: Upload release asset
         if: github.event_name == 'release' && (github.event.action == 'published' || github.event.action == 'created')
         uses: softprops/action-gh-release@v2
