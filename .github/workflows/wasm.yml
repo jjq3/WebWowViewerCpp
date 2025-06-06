@@ -91,41 +91,36 @@ jobs:
           patch -p1 < patch_tbb.txt || echo "补丁应用失败，可能文件已经修改或路径不正确"
           echo "补丁应用完成"
       
-      # 添加TBB配置修改
-      - name: Modify wowViewerLib CMakeLists.txt
+      # 检查并手动添加TBB_USE_EXCEPTIONS定义 - 不再使用sed修改文件
+      - name: Create CMake Options File
         run: |
-          echo "修改wowViewerLib/CMakeLists.txt文件..."
-          if [ -f "wowViewerLib/CMakeLists.txt" ]; then
-            sed -i '/if (EMSCRIPTEN)/,/ENDIF()/c\if (EMSCRIPTEN)\n    message(This is EMSCRIPTEN)\n    set(LINK_GLEW 0)\n    set(LINK_VULKAN OFF)\n    set(LINK_OPENMP 0)\n    set(LINK_OGL4 0)\n    set(TBB_STRICT ON CACHE BOOL "")\n    if (NOT EMSCRIPTEN_SIMD)\n        set(ENABLE_SIMD 0)\n    endif()\n    add_definitions("-DTBB_USE_EXCEPTIONS=0")\nENDIF()' wowViewerLib/CMakeLists.txt
-            echo "修改完成"
-          else
-            echo "错误: wowViewerLib/CMakeLists.txt 文件不存在"
-            ls -la
-            exit 1
-          fi
+          echo "创建CMake自定义选项文件..."
+          mkdir -p build
+          cat > build/emscripten_options.cmake << 'EOL'
+          # TBB配置
+          set(TBB_STRICT ON CACHE BOOL "" FORCE)
+          set(TBB_TEST OFF CACHE BOOL "" FORCE)
+          set(TBB_ENABLE_SHARED OFF CACHE BOOL "" FORCE)
+          # 禁用TBB异常
+          add_compile_definitions(TBB_USE_EXCEPTIONS=0)
+          EOL
       
       # 配置CMake
       - name: Configure CMake
         run: |
-          echo "查找Emscripten.cmake..."
+          echo "配置CMake..."
           source $EMSDK/emsdk_env.sh
-          # 在EMSDK目录下查找Emscripten.cmake
-          TOOLCHAIN_LOC="$(find $EMSDK -name 'Emscripten.cmake' -print -quit)"
-          echo "找到工具链文件：$TOOLCHAIN_LOC"
-          
-          mkdir -p build
-          mkdir -p instdir
           cd build
           
-          echo "配置CMake..."
-          # 使用emcmake自动配置，无需指定工具链文件
+          # 使用emcmake自动配置，添加我们的选项文件
           emcmake cmake \
             ../emscripten_port \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX:PATH=../instdir \
             -DTBB_STRICT=ON \
             -DTBB_TEST=OFF \
-            -DTBB_ENABLE_SHARED=OFF
+            -DTBB_ENABLE_SHARED=OFF \
+            -C ./emscripten_options.cmake
       
       # 构建项目
       - name: Build
@@ -133,7 +128,7 @@ jobs:
         run: |
           echo "开始构建项目..."
           source $EMSDK/emsdk_env.sh
-          emmake make project
+          emmake make project -j$(nproc) VERBOSE=1
           echo "构建完成"
           
           # 检查构建结果
@@ -147,15 +142,18 @@ jobs:
         run: |
           echo "准备构建产物..."
           mkdir -p wasm_build
-          if [ -d "build_packed" ] && [ -f "build_packed/project.js" ]; then
-            cp build_packed/project.js wasm_build/
-            cp build_packed/project.wasm wasm_build/
-            cp build_packed/project.data wasm_build/
-            echo "文件已复制到wasm_build目录"
-          else
-            echo "警告: 构建产物不在预期位置，尝试查找..."
-            find . -name "project.js" -o -name "project.wasm" -o -name "project.data"
-            # 如果找到文件，尝试复制
+          
+          # 检查多个可能的位置
+          for dir in "build_packed" "build"; do
+            if [ -d "$dir" ]; then
+              echo "检查目录: $dir"
+              find "$dir" -name "project.*" -type f -exec cp {} wasm_build/ \;
+            fi
+          done
+          
+          # 如果仍然没有找到，执行全局搜索
+          if [ ! "$(ls -A wasm_build 2>/dev/null)" ]; then
+            echo "警告: 构建产物不在预期位置，尝试全局查找..."
             for file in $(find . -name "project.js" -o -name "project.wasm" -o -name "project.data"); do
               cp "$file" wasm_build/
               echo "已复制: $file 到 wasm_build/"
@@ -163,21 +161,33 @@ jobs:
           fi
           
           echo "wasm_build目录内容:"
-          ls -la wasm_build/
+          ls -la wasm_build/ || echo "wasm_build目录为空"
       
       # 上传构建产物
       - name: Upload WebAssembly artifacts
         uses: actions/upload-artifact@v4
         with:
           name: wasm-build
-          path: wasm_build/
+          path: |
+            wasm_build/
+            build/project.*
+            build_packed/project.*
+          if-no-files-found: warn
       
       # 如果是发布，打包并上传
       - name: Pack release asset
         if: github.event_name == 'release' && (github.event.action == 'published' || github.event.action == 'created')
         run: |
-          cd wasm_build
-          7z a ../wasm-build.zip .
+          if [ -d "wasm_build" ] && [ "$(ls -A wasm_build 2>/dev/null)" ]; then
+            cd wasm_build
+            7z a ../wasm-build.zip .
+          else
+            echo "警告: wasm_build目录为空，尝试打包可能找到的文件"
+            mkdir -p temp_pack
+            find . -name "project.js" -o -name "project.wasm" -o -name "project.data" -exec cp {} temp_pack/ \;
+            cd temp_pack
+            7z a ../wasm-build.zip .
+          fi
       
       - name: Upload release asset
         if: github.event_name == 'release' && (github.event.action == 'published' || github.event.action == 'created')
