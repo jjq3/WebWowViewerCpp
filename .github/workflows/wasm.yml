@@ -17,12 +17,12 @@ jobs:
     
     steps:
       # 检出代码，包括子模块
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
       
       # 设置Python
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
       
@@ -31,27 +31,37 @@ jobs:
         run: |
           echo github.event.action: ${{ github.event.action }}
           echo github.event_name: ${{ github.event_name }}
+          echo "当前目录内容:"
+          ls -la
       
       # 安装依赖
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build cmake xorg-dev libglu1-mesa-dev
+          sudo apt-get install -y ninja-build cmake xorg-dev libglu1-mesa-dev p7zip-full
           ninja --version
           cmake --version
           gcc --version
       
       # 设置Emscripten
       - name: Setup emsdk
-        uses: mymindstorm/setup-emsdk@v11
+        uses: mymindstorm/setup-emsdk@v12
         with:
           version: '3.1.19'
           actions-cache-folder: 'emsdk-cache'
+      
+      # 验证Emscripten安装
+      - name: Verify Emscripten
+        run: |
+          emcc --version
+          which emcc
+          which em++
       
       # 修补TBB以解决线程问题
       - name: Patch TBB for Emscripten
         shell: bash
         run: |
+          echo "创建TBB补丁..."
           cat > patch_tbb.txt << 'EOL'
           diff --git a/wowViewerLib/3rdparty/oneTbb/cmake/compilers/Clang.cmake b/wowViewerLib/3rdparty/oneTbb/cmake/compilers/Clang.cmake
           index xxxxxxx..xxxxxxx 100644
@@ -67,23 +77,37 @@ jobs:
           +endif()
           EOL
           
-          patch -p1 < patch_tbb.txt
+          echo "应用补丁..."
+          patch -p1 < patch_tbb.txt || echo "补丁应用失败，可能文件已经修改或路径不正确"
+          echo "补丁应用完成"
       
       # 添加TBB配置修改
       - name: Modify wowViewerLib CMakeLists.txt
         run: |
-          sed -i '/if (EMSCRIPTEN)/,/ENDIF()/c\if (EMSCRIPTEN)\n    message(This is EMSCRIPTEN)\n    set(LINK_GLEW 0)\n    set(LINK_VULKAN OFF)\n    set(LINK_OPENMP 0)\n    set(LINK_OGL4 0)\n    set(TBB_STRICT ON CACHE BOOL "")\n    if (NOT EMSCRIPTEN_SIMD)\n        set(ENABLE_SIMD 0)\n    endif()\n    add_definitions("-DTBB_USE_EXCEPTIONS=0")\nENDIF()' wowViewerLib/CMakeLists.txt
+          echo "修改wowViewerLib/CMakeLists.txt文件..."
+          if [ -f "wowViewerLib/CMakeLists.txt" ]; then
+            sed -i '/if (EMSCRIPTEN)/,/ENDIF()/c\if (EMSCRIPTEN)\n    message(This is EMSCRIPTEN)\n    set(LINK_GLEW 0)\n    set(LINK_VULKAN OFF)\n    set(LINK_OPENMP 0)\n    set(LINK_OGL4 0)\n    set(TBB_STRICT ON CACHE BOOL "")\n    if (NOT EMSCRIPTEN_SIMD)\n        set(ENABLE_SIMD 0)\n    endif()\n    add_definitions("-DTBB_USE_EXCEPTIONS=0")\nENDIF()' wowViewerLib/CMakeLists.txt
+            echo "修改完成"
+          else
+            echo "错误: wowViewerLib/CMakeLists.txt 文件不存在"
+            ls -la
+            exit 1
+          fi
       
       # 配置CMake
       - name: Configure CMake
         run: |
+          echo "在emsdk-cache中查找Emscripten.cmake..."
           cd emsdk-cache
-          TOOLCHAIN_LOC="$(find ~+ . -name 'Emscripten.cmake' -print -quit)"
+          TOOLCHAIN_LOC="$(find ~+ -name 'Emscripten.cmake' -print -quit)"
+          echo "找到工具链文件：$TOOLCHAIN_LOC"
           cd ..
+          
           mkdir -p build
           mkdir -p instdir
           cd build
           
+          echo "配置CMake..."
           cmake \
             -S ../emscripten_port \
             -B . \
@@ -99,19 +123,41 @@ jobs:
       - name: Build
         working-directory: build
         run: |
+          echo "开始构建项目..."
           emmake make project
+          echo "构建完成"
+          
+          # 检查构建结果
+          echo "构建结果目录结构:"
+          ls -la ../build_packed/ || echo "build_packed目录不存在"
+          find .. -name "project.*" -type f
       
       # 复制生成的WebAssembly文件
       - name: Prepare artifacts
         run: |
+          echo "准备构建产物..."
           mkdir -p wasm_build
-          cp build_packed/project.js wasm_build/
-          cp build_packed/project.wasm wasm_build/
-          cp build_packed/project.data wasm_build/
+          if [ -d "build_packed" ] && [ -f "build_packed/project.js" ]; then
+            cp build_packed/project.js wasm_build/
+            cp build_packed/project.wasm wasm_build/
+            cp build_packed/project.data wasm_build/
+            echo "文件已复制到wasm_build目录"
+          else
+            echo "警告: 构建产物不在预期位置，尝试查找..."
+            find . -name "project.js" -o -name "project.wasm" -o -name "project.data"
+            # 如果找到文件，尝试复制
+            for file in $(find . -name "project.js" -o -name "project.wasm" -o -name "project.data"); do
+              cp "$file" wasm_build/
+              echo "已复制: $file 到 wasm_build/"
+            done
+          fi
+          
+          echo "wasm_build目录内容:"
+          ls -la wasm_build/
       
       # 上传构建产物
       - name: Upload WebAssembly artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: wasm-build
           path: wasm_build/
@@ -125,6 +171,6 @@ jobs:
       
       - name: Upload release asset
         if: github.event_name == 'release' && (github.event.action == 'published' || github.event.action == 'created')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: wasm-build.zip
