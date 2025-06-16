@@ -247,111 +247,25 @@ jobs:
           cmake \
             -S ../emscripten_port \
             -B . \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
             -DCMAKE_BUILD_TYPE=${{ matrix.config.build_type }} \
             -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_LOC} \
             -DCMAKE_INSTALL_PREFIX:PATH=${INSTALL_LOC}
       - name: Build
         shell: bash
         working-directory: build
-        run: |
-          if [[ "${{ matrix.config.name }}" == *"Emscripten"* ]]; then
-            cmake --build . --config ${{ matrix.config.build_type }}
-          else
-            cmake --build . --config ${{ matrix.config.build_type }} --target WowStudio
-          fi
+        run: cmake --build . --config ${{ matrix.config.build_type }} --target WowStudio
 
       - name: Install Strip
         shell: bash
         working-directory: build
         run: cmake --install . --strip
 
-      - name: Copy Emscripten Output Files
-        if: startsWith(matrix.config.name, 'emscripten')
-        shell: bash
-        run: |
-          echo "Listing build directory contents:"
-          ls -la build/
-          
-          # Try to find the .wasm and .data files
-          echo "Looking for .wasm files:"
-          find build -name "*.wasm" -type f
-          
-          echo "Looking for .data files:"
-          find build -name "*.data" -type f
-          
-          # Copy the files if they exist
-          if [ -f "build/project.wasm" ]; then
-            cp build/project.wasm instdir/
-            echo "Copied project.wasm to instdir/"
-          elif [ -n "$(find build -name "*.wasm" -type f | head -1)" ]; then
-            WASM_FILE=$(find build -name "*.wasm" -type f | head -1)
-            cp "$WASM_FILE" instdir/project.wasm
-            echo "Copied $WASM_FILE to instdir/project.wasm"
-          else
-            echo "Warning: No .wasm file found"
-          fi
-          
-          if [ -f "build/project.data" ]; then
-            cp build/project.data instdir/
-            echo "Copied project.data to instdir/"
-          elif [ -n "$(find build -name "*.data" -type f | head -1)" ]; then
-            DATA_FILE=$(find build -name "*.data" -type f | head -1)
-            cp "$DATA_FILE" instdir/project.data
-            echo "Copied $DATA_FILE to instdir/project.data"
-          else
-            echo "Warning: No .data file found"
-          fi
-          
-          echo "Contents of instdir:"
-          ls -la instdir/
-
-      - name: Copy Emscripten Output Files
-        if: startsWith(matrix.config.name, 'emscripten')
-        shell: bash
-        run: |
-          if [ -f "build/project.wasm" ]; then
-            cp build/project.wasm instdir/
-            echo "Found and copied project.wasm"
-          else
-            echo "Warning: project.wasm not found in build directory"
-            find build -name "*.wasm" -type f
-          fi
-          
-          if [ -f "build/project.data" ]; then
-            cp build/project.data instdir/
-            echo "Found and copied project.data"
-          else
-            echo "Warning: project.data not found in build directory"
-            find build -name "*.data" -type f
-          fi
-          
-          ls -la instdir/
-
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           path: ./instdir/
           name: ${{ matrix.config.artifact }}
-          
-      - name: Upload Emscripten Files Separately
-        if: startsWith(matrix.config.name, 'emscripten')
-        uses: actions/upload-artifact@v4
-        with:
-          path: |
-            ./instdir/project.wasm
-            ./instdir/project.data
-          name: emscripten_web_files
-          if-no-files-found: warn
-          
-      - name: Upload Emscripten Files Separately
-        if: startsWith(matrix.config.name, 'emscripten')
-        uses: actions/upload-artifact@v4
-        with:
-          path: |
-            ./instdir/project.wasm
-            ./instdir/project.data
-          name: emscripten_web_files
 
       - name: Pack release asset
         if: github.event_name == 'release' && (github.event.action == 'published' || github.event.action == 'created')
@@ -360,16 +274,6 @@ jobs:
         run: |
           ls -laR
           ${{ matrix.config.archiver }} ../${{ matrix.config.artifact }} .
-          
-          # For Emscripten, also copy the web files to the release root
-          if [[ "${{ matrix.config.name }}" == *"Emscripten"* ]]; then
-            if [ -f "project.wasm" ]; then
-              cp project.wasm ../project.wasm
-            fi
-            if [ -f "project.data" ]; then
-              cp project.data ../project.data
-            fi
-          fi
 
       - name: Upload release asset
         if: github.event_name == 'release' && (github.event.action == 'published' || github.event.action == 'created')
@@ -377,7 +281,4 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           upload_url: ${{ github.event.release.upload_url }}
-          files: |
-            ${{ matrix.config.artifact }}.7z
-            project.wasm
-            project.data
+          files: ${{ matrix.config.artifact }}.7z
