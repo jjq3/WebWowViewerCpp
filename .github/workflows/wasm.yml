@@ -51,6 +51,17 @@ jobs:
               archiver: "7z a",
               generators: "Ninja"
             }
+          - {
+            name: "Emscripten",
+            os: ubuntu-latest,
+            artifact: "wasm_build",
+            build_type: "Release",
+            cmake_defines: "",
+            cc: "emcc",
+            cxx: "em++",
+            archiver: "7z a",
+            generators: "Ninja"
+          }
 #          - {
 #              name: "Windows Latest MinGW",
 #              os: windows-latest,
@@ -70,17 +81,6 @@ jobs:
 #            cmake_defines: "",
 #            cc: "gcc",
 #            cxx: "g++",
-#            archiver: "7z a",
-#            generators: "Ninja"
-#          }
-#          - {
-#            name: "Emscripten",
-#            os: ubuntu-latest,
-#            artifact: "emscripten.7z",
-#            build_type: "Release",
-#            cmake_defines: "",
-#            cc: "emcc",
-#            cxx: "em++",
 #            archiver: "7z a",
 #            generators: "Ninja"
 #          }
@@ -232,7 +232,7 @@ jobs:
             ${{ matrix.config.cmake_defines}} \
             -DCMAKE_INSTALL_PREFIX:PATH=${INSTALL_LOC}
       - name: Configure emscripten
-        if: startsWith(matrix.config.name, 'emscripten')
+        if: startsWith(matrix.config.name, 'Emscripten')
         shell: bash
         run: |
           cd emsdk-cache
@@ -247,7 +247,7 @@ jobs:
           cmake \
             -S ../emscripten_port \
             -B . \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_BUILD_TYPE=${{ matrix.config.build_type }} \
             -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_LOC} \
             -DCMAKE_INSTALL_PREFIX:PATH=${INSTALL_LOC}
@@ -255,6 +255,18 @@ jobs:
         shell: bash
         working-directory: build
         run: cmake --build . --config ${{ matrix.config.build_type }} --target WowStudio
+
+      - name: Copy WASM artifacts
+        if: startsWith(matrix.config.name, 'Emscripten')
+        shell: bash
+        working-directory: build
+        run: |
+          echo "Copying WASM files to install directory"
+          cp -f *.wasm ../instdir/ || true
+          cp -f *.js ../instdir/ || true
+          cp -f *.data ../instdir/ || true
+          cp -f *.html ../instdir/ || true
+          ls -la ../instdir/
 
       - name: Install Strip
         shell: bash
