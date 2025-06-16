@@ -56,11 +56,11 @@ jobs:
             os: ubuntu-latest,
             artifact: "wasm_build",
             build_type: "Release",
-            cmake_defines: "",
+            cmake_defines: "-DCMAKE_EXECUTABLE_SUFFIX=.js -DCMAKE_EXECUTABLE_SUFFIX_INIT=.js",
             cc: "emcc",
             cxx: "em++",
             archiver: "7z a",
-            generators: "Ninja"
+            generators: "Unix Makefiles"
           }
 #          - {
 #              name: "Windows Latest MinGW",
@@ -139,6 +139,14 @@ jobs:
           # The cache folder will be placed in the build directory,
           #  so make sure it doesn't conflict with anything!
           actions-cache-folder: 'emsdk-cache'
+      - name: Setup emsdk
+        if: startsWith(matrix.config.name, 'Emscripten')
+        uses: mymindstorm/setup-emsdk@v12
+        with:
+          # 使用更稳定的版本
+          version: 3.1.45
+          # 禁用缓存以避免缓存服务问题
+          no-cache: true
 
       - name: Install dependencies on ubuntu
         if: startsWith(matrix.config.name, 'Ubuntu_Latest_GCC')
@@ -235,22 +243,31 @@ jobs:
         if: startsWith(matrix.config.name, 'Emscripten')
         shell: bash
         run: |
-          cd emsdk-cache
-          TOOLCHAIN_LOC="$(find ~+ . -name 'Emscripten.cmake' -print -quit)"
-          cd ..
-          mkdir build
-          mkdir instdir
-          cd instdir
-          INSTALL_LOC="$(pwd)"
-          cd ..
-          cd build
-          cmake \
-            -S ../emscripten_port \
-            -B . \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DCMAKE_BUILD_TYPE=${{ matrix.config.build_type }} \
-            -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_LOC} \
-            -DCMAKE_INSTALL_PREFIX:PATH=${INSTALL_LOC}
+            mkdir -p build
+            mkdir -p instdir
+            cd instdir
+            INSTALL_LOC="$(pwd)"
+            cd ..
+            cd build
+          
+            # 使用 emsdkpath 环境变量获取 Emscripten CMake 工具链文件
+            TOOLCHAIN_LOC="$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
+            echo "Using Emscripten toolchain at: ${TOOLCHAIN_LOC}"
+          
+            # 确认工具链文件存在
+            if [ ! -f "$TOOLCHAIN_LOC" ]; then
+                echo "找不到工具链文件，尝试搜索其他位置..."
+                TOOLCHAIN_LOC=$(find $EMSDK -name 'Emscripten.cmake' -print -quit)
+                echo "找到工具链文件: ${TOOLCHAIN_LOC}"
+            fi
+          
+            cmake \
+                -S ../emscripten_port \
+                -B . \
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+                -DCMAKE_BUILD_TYPE=${{ matrix.config.build_type }} \
+                -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_LOC} \
+                -DCMAKE_INSTALL_PREFIX:PATH=${INSTALL_LOC}
       - name: Build
         shell: bash
         working-directory: build
