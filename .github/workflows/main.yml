@@ -270,6 +270,46 @@ jobs:
         if: startsWith(matrix.config.name, 'emscripten')
         shell: bash
         run: |
+          echo "Listing build directory contents:"
+          ls -la build/
+          
+          # Try to find the .wasm and .data files
+          echo "Looking for .wasm files:"
+          find build -name "*.wasm" -type f
+          
+          echo "Looking for .data files:"
+          find build -name "*.data" -type f
+          
+          # Copy the files if they exist
+          if [ -f "build/project.wasm" ]; then
+            cp build/project.wasm instdir/
+            echo "Copied project.wasm to instdir/"
+          elif [ -n "$(find build -name "*.wasm" -type f | head -1)" ]; then
+            WASM_FILE=$(find build -name "*.wasm" -type f | head -1)
+            cp "$WASM_FILE" instdir/project.wasm
+            echo "Copied $WASM_FILE to instdir/project.wasm"
+          else
+            echo "Warning: No .wasm file found"
+          fi
+          
+          if [ -f "build/project.data" ]; then
+            cp build/project.data instdir/
+            echo "Copied project.data to instdir/"
+          elif [ -n "$(find build -name "*.data" -type f | head -1)" ]; then
+            DATA_FILE=$(find build -name "*.data" -type f | head -1)
+            cp "$DATA_FILE" instdir/project.data
+            echo "Copied $DATA_FILE to instdir/project.data"
+          else
+            echo "Warning: No .data file found"
+          fi
+          
+          echo "Contents of instdir:"
+          ls -la instdir/
+
+      - name: Copy Emscripten Output Files
+        if: startsWith(matrix.config.name, 'emscripten')
+        shell: bash
+        run: |
           if [ -f "build/project.wasm" ]; then
             cp build/project.wasm instdir/
             echo "Found and copied project.wasm"
@@ -293,6 +333,16 @@ jobs:
         with:
           path: ./instdir/
           name: ${{ matrix.config.artifact }}
+          
+      - name: Upload Emscripten Files Separately
+        if: startsWith(matrix.config.name, 'emscripten')
+        uses: actions/upload-artifact@v4
+        with:
+          path: |
+            ./instdir/project.wasm
+            ./instdir/project.data
+          name: emscripten_web_files
+          if-no-files-found: warn
           
       - name: Upload Emscripten Files Separately
         if: startsWith(matrix.config.name, 'emscripten')
