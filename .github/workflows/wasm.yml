@@ -117,27 +117,21 @@ jobs:
           cmake --version
 
       - name: Install deps for Emscripten
-        if: startsWith(matrix.config.name, 'emscripten')
+        if: startsWith(matrix.config.name, 'Emscripten')
         run: |
-          sudo mv /usr/local/bin/cmake /usr/local/bin/cmake-old
-          wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | sudo apt-key add -
-          sudo apt-add-repository 'deb https://apt.kitware.com/ubuntu/ bionic main'
           sudo apt-get update
-          sudo apt-get install ninja-build cmake
-          sudo apt-get install xorg-dev libglu1-mesa-dev
+          sudo apt-get install -y ninja-build cmake xorg-dev libglu1-mesa-dev
           ninja --version
           cmake --version
           gcc --version
-          cd ..
 
       - name: Setup emsdk
         if: startsWith(matrix.config.name, 'Emscripten')
-        uses: mymindstorm/setup-emsdk@v12
+        uses: mymindstorm/setup-emsdk@v11
         with:
-          # 使用更稳定的版本
-          version: 3.1.45
-          # 禁用缓存以避免缓存服务问题
-          no-cache: true
+          version: 2.0.34
+          actions-cache-folder: 'emsdk-cache'
+          no-cache: false
 
       - name: Install dependencies on ubuntu
         if: startsWith(matrix.config.name, 'Ubuntu_Latest_GCC')
@@ -234,47 +228,70 @@ jobs:
         if: startsWith(matrix.config.name, 'Emscripten')
         shell: bash
         run: |
-            mkdir -p build
-            mkdir -p instdir
-            cd instdir
-            INSTALL_LOC="$(pwd)"
-            cd ..
-            cd build
+          # 显示Emscripten环境变量
+          echo "EMSDK = $EMSDK"
+          ls -la $EMSDK
           
-            # 使用 emsdkpath 环境变量获取 Emscripten CMake 工具链文件
-            TOOLCHAIN_LOC="$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
-            echo "Using Emscripten toolchain at: ${TOOLCHAIN_LOC}"
+          mkdir -p build
+          mkdir -p instdir
+          cd instdir
+          INSTALL_LOC="$(pwd)"
+          cd ..
           
-            # 确认工具链文件存在
-            if [ ! -f "$TOOLCHAIN_LOC" ]; then
-                echo "找不到工具链文件，尝试搜索其他位置..."
-                TOOLCHAIN_LOC=$(find $EMSDK -name 'Emscripten.cmake' -print -quit)
-                echo "找到工具链文件: ${TOOLCHAIN_LOC}"
-            fi
+          # 准备编译目录
+          mkdir -p build/glsl
+          cp -r wowViewerLib/shaders/glsl/* build/glsl/ || true
           
-            cmake \
-                -S ../emscripten_port \
-                -B . \
-                -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-                -DCMAKE_BUILD_TYPE=${{ matrix.config.build_type }} \
-                -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_LOC} \
-                -DCMAKE_INSTALL_PREFIX:PATH=${INSTALL_LOC}
-      - name: Build
-        shell: bash
-        working-directory: build
-        run: cmake --build . --config ${{ matrix.config.build_type }} --target WowStudio
-
-      - name: Copy WASM artifacts
+          cd build
+          
+          # 获取Emscripten工具链文件路径
+          source $EMSDK/emsdk_env.sh
+          TOOLCHAIN_LOC=$(em-config EMSCRIPTEN_ROOT)/cmake/Modules/Platform/Emscripten.cmake
+          echo "Using Emscripten toolchain at: ${TOOLCHAIN_LOC}"
+          
+          # 检查工具链文件是否存在
+          if [ ! -f "$TOOLCHAIN_LOC" ]; then
+            echo "找不到Emscripten工具链文件，尝试其他位置..."
+            TOOLCHAIN_LOC=$(find $EMSDK -name 'Emscripten.cmake' -print -quit)
+            echo "找到工具链文件: ${TOOLCHAIN_LOC}"
+          fi
+          
+          # 简化的CMake配置，减少依赖
+          emcmake cmake \
+            -S ../emscripten_port \
+            -B . \
+            -DCMAKE_BUILD_TYPE=${{ matrix.config.build_type }} \
+            -DCMAKE_INSTALL_PREFIX:PATH=${INSTALL_LOC}
+      - name: Build for Emscripten
         if: startsWith(matrix.config.name, 'Emscripten')
         shell: bash
         working-directory: build
         run: |
-          echo "Copying WASM files to install directory"
+          # 使用Emscripten环境
+          source $EMSDK/emsdk_env.sh
+          
+          # 构建项目
+          emmake make -j1
+          
+          # 显示生成的文件
+          echo "查看生成的文件:"
+          find . -name "*.wasm" -o -name "*.js" -o -name "*.data"
+          
+          # 复制WASM产物到安装目录
+          mkdir -p ../instdir
           cp -f *.wasm ../instdir/ || true
           cp -f *.js ../instdir/ || true
           cp -f *.data ../instdir/ || true
           cp -f *.html ../instdir/ || true
+          
+          echo "安装目录内容:"
           ls -la ../instdir/
+
+      - name: Build for non-Emscripten
+        if: ${{ !startsWith(matrix.config.name, 'Emscripten') }}
+        shell: bash
+        working-directory: build
+        run: cmake --build . --config ${{ matrix.config.build_type }} --target WowStudio
 
       - name: Install Strip
         shell: bash
