@@ -52,38 +52,16 @@ jobs:
               generators: "Ninja"
             }
           - {
-            name: "Emscripten",
-            os: ubuntu-latest,
-            artifact: "wasm_build",
-            build_type: "Release",
-            cmake_defines: "-DCMAKE_EXECUTABLE_SUFFIX=.js -DCMAKE_EXECUTABLE_SUFFIX_INIT=.js",
-            cc: "emcc",
-            cxx: "em++",
-            archiver: "7z a",
-            generators: "Unix Makefiles"
-          }
-#          - {
-#              name: "Windows Latest MinGW",
-#              os: windows-latest,
-#              artifact: "windows_clang_mingw.7z",
-#              build_type: "Release",
-#              cmake_defines: "",
-#              cc: "clang",
-#              cxx: "clang++",
-#              archiver: "7z a",
-#              generators: "Ninja"
-#            }
-#          - {
-#            name: "Ubuntu_Latest_GCC",
-#            os: ubuntu-latest,
-#            artifact: "ubuntu_gcc.7z",
-#            build_type: "Release",
-#            cmake_defines: "",
-#            cc: "gcc",
-#            cxx: "g++",
-#            archiver: "7z a",
-#            generators: "Ninja"
-#          }
+              name: "Emscripten",
+              os: ubuntu-latest,
+              artifact: "emscripten.7z",
+              build_type: "Release",
+              cmake_defines: "",
+              cc: "emcc",
+              cxx: "em++",
+              archiver: "7z a",
+              generators: "Ninja"
+            }
 #          - {
 #            name: "macOS Latest Clang",
 #            os: macos-latest,
@@ -117,21 +95,28 @@ jobs:
           cmake --version
 
       - name: Install deps for Emscripten
-        if: startsWith(matrix.config.name, 'Emscripten')
+        if: startsWith(matrix.config.name, 'emscripten')
         run: |
+          sudo mv /usr/local/bin/cmake /usr/local/bin/cmake-old
+          wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | sudo apt-key add -
+          sudo apt-add-repository 'deb https://apt.kitware.com/ubuntu/ bionic main'
           sudo apt-get update
-          sudo apt-get install -y ninja-build cmake xorg-dev libglu1-mesa-dev
+          sudo apt-get install ninja-build cmake
+          sudo apt-get install xorg-dev libglu1-mesa-dev
           ninja --version
           cmake --version
           gcc --version
-
+          cd ..
       - name: Setup emsdk
-        if: startsWith(matrix.config.name, 'Emscripten')
+        if: startsWith(matrix.config.name, 'emscripten')
         uses: mymindstorm/setup-emsdk@v11
         with:
-          version: 2.0.34
+          # Make sure to set a version number!
+          version: 3.1.19
+          # This is the name of the cache folder.
+          # The cache folder will be placed in the build directory,
+          #  so make sure it doesn't conflict with anything!
           actions-cache-folder: 'emsdk-cache'
-          no-cache: false
 
       - name: Install dependencies on ubuntu
         if: startsWith(matrix.config.name, 'Ubuntu_Latest_GCC')
@@ -225,70 +210,26 @@ jobs:
             ${{ matrix.config.cmake_defines}} \
             -DCMAKE_INSTALL_PREFIX:PATH=${INSTALL_LOC}
       - name: Configure emscripten
-        if: startsWith(matrix.config.name, 'Emscripten')
+        if: startsWith(matrix.config.name, 'emscripten')
         shell: bash
         run: |
-          # 显示Emscripten环境变量
-          echo "EMSDK = $EMSDK"
-          ls -la $EMSDK
-          
-          mkdir -p build
-          mkdir -p instdir
+          cd emsdk-cache
+          TOOLCHAIN_LOC="$(find ~+ . -name 'Emscripten.cmake' -print -quit)"
+          cd ..
+          mkdir build
+          mkdir instdir
           cd instdir
           INSTALL_LOC="$(pwd)"
           cd ..
-          
-          # 准备编译目录
-          mkdir -p build/glsl
-          cp -r wowViewerLib/shaders/glsl/* build/glsl/ || true
-          
           cd build
-          
-          # 获取Emscripten工具链文件路径
-          source $EMSDK/emsdk_env.sh
-          TOOLCHAIN_LOC=$(em-config EMSCRIPTEN_ROOT)/cmake/Modules/Platform/Emscripten.cmake
-          echo "Using Emscripten toolchain at: ${TOOLCHAIN_LOC}"
-          
-          # 检查工具链文件是否存在
-          if [ ! -f "$TOOLCHAIN_LOC" ]; then
-            echo "找不到Emscripten工具链文件，尝试其他位置..."
-            TOOLCHAIN_LOC=$(find $EMSDK -name 'Emscripten.cmake' -print -quit)
-            echo "找到工具链文件: ${TOOLCHAIN_LOC}"
-          fi
-          
-          # 简化的CMake配置，减少依赖
-          emcmake cmake \
+          cmake \
             -S ../emscripten_port \
             -B . \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
             -DCMAKE_BUILD_TYPE=${{ matrix.config.build_type }} \
+            -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_LOC} \
             -DCMAKE_INSTALL_PREFIX:PATH=${INSTALL_LOC}
-      - name: Build for Emscripten
-        if: startsWith(matrix.config.name, 'Emscripten')
-        shell: bash
-        working-directory: build
-        run: |
-          # 使用Emscripten环境
-          source $EMSDK/emsdk_env.sh
-          
-          # 构建项目
-          emmake make -j1
-          
-          # 显示生成的文件
-          echo "查看生成的文件:"
-          find . -name "*.wasm" -o -name "*.js" -o -name "*.data"
-          
-          # 复制WASM产物到安装目录
-          mkdir -p ../instdir
-          cp -f *.wasm ../instdir/ || true
-          cp -f *.js ../instdir/ || true
-          cp -f *.data ../instdir/ || true
-          cp -f *.html ../instdir/ || true
-          
-          echo "安装目录内容:"
-          ls -la ../instdir/
-
-      - name: Build for non-Emscripten
-        if: ${{ !startsWith(matrix.config.name, 'Emscripten') }}
+      - name: Build
         shell: bash
         working-directory: build
         run: cmake --build . --config ${{ matrix.config.build_type }} --target WowStudio
